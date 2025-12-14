@@ -12,19 +12,23 @@ import {
 } from "recharts";
 
 /* =====================================
-   Mini Tasks Planner – FULL FILE
+   Task Planner – FULL FILE
    - Local auth (username/password) in localStorage
    - Week grid with tasks per day
    - Weekly chart view
    - Light theme only
-   - Task creation with 12h time (HH:MM + AM/PM)
+   - Create tasks with Start + End time (12h input), stored as 24h "HH:MM"
    - Status color dot:
-       gray  = no time or > 1 hour away
-       yellow = within 1 hour before time
-       red    = after time
-   - NEW:
-       • Cleaner task UI (only color dot + Edit + Delete)
-       • Edit modal to change title, day (within week), and time
+       green  = completed
+       gray   = no due time or > 1 hour away
+       yellow = within 1 hour before due time
+       red    = after due time
+     NOTE: due time = endTime if present, otherwise startTime.
+   - Edit modal includes:
+       • Calendar date picker (full month) + month navigation arrows
+       • Start/end time
+       • Title
+   - Backward compatible: old tasks with "time" migrated to "startTime"
    ===================================== */
 
 const Styles = () => (
@@ -52,7 +56,7 @@ const Styles = () => (
     .container{
       width:100%; max-width:100%;
       display:grid; gap:24px;
-      grid-template-rows: auto 1fr auto;          /* header / main / footer */
+      grid-template-rows: auto 1fr auto;
       grid-template-columns: minmax(0,1fr);
       justify-items:stretch; align-items:stretch;
     }
@@ -104,7 +108,6 @@ const Styles = () => (
     .wk{ font-weight:600; color:var(--text) }
     .md{ font-size:12px; color:var(--muted) }
 
-    /* Add task CTA + Composer (WRAPS TO 2 ROWS) */
     .adder{
       width:100%; text-align:left;
       border:1px dashed var(--border); border-radius:12px;
@@ -122,10 +125,9 @@ const Styles = () => (
       border:1px solid var(--border); border-radius:12px; padding:8px; font-size:14px;
       background:var(--card); color:var(--text);
     }
-    .titleInput{ flex:1 1 100%; min-width:0 }   /* full-width first row */
-
-    /* time inputs share this class */
+    .titleInput{ flex:1 1 100%; min-width:0 }
     .input.time{ width:80px; flex:0 0 auto }
+    .timeLabel{ font-size:12px; color:var(--muted); margin-right:2px }
 
     .task{
       display:flex; gap:12px; align-items:center;
@@ -149,7 +151,6 @@ const Styles = () => (
     }
     .x:hover{ opacity:1; background:rgba(0,0,0,0.04) }
 
-    /* Status color dot */
     .statusDot{
       width:10px;
       height:10px;
@@ -174,8 +175,8 @@ const Styles = () => (
       z-index:50;
     }
     .modal{
-      width:360px;
-      max-width:90vw;
+      width:420px;
+      max-width:94vw;
       background:var(--card);
       border-radius:16px;
       border:1px solid var(--border);
@@ -203,7 +204,7 @@ const Styles = () => (
     .modalRow{
       display:flex;
       flex-direction:column;
-      gap:4px;
+      gap:6px;
     }
     .modalLabel{
       font-size:12px;
@@ -214,6 +215,71 @@ const Styles = () => (
       gap:8px;
       flex-wrap:wrap;
       align-items:center;
+    }
+    .miniSep{
+      color:var(--muted);
+      font-size:12px;
+      padding:0 2px;
+    }
+
+    /* ===== Calendar Picker ===== */
+    .calWrap{
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:10px;
+      background:var(--card);
+    }
+    .calHeader{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:8px;
+      margin-bottom:8px;
+    }
+    .calMonth{
+      font-weight:600;
+      color:var(--text);
+      font-size:14px;
+    }
+    .calGrid{
+      display:grid;
+      grid-template-columns:repeat(7, minmax(0, 1fr));
+      gap:6px;
+    }
+    .calDow{
+      font-size:11px;
+      color:var(--muted);
+      text-align:center;
+      padding:2px 0 6px;
+    }
+    .calCell{
+      height:34px;
+      border-radius:10px;
+      border:1px solid transparent;
+      background:transparent;
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:13px;
+      color:var(--text);
+    }
+    .calCell:hover{
+      background:rgba(37,99,235,0.08);
+      border-color:rgba(37,99,235,0.15);
+    }
+    .calCell.muted{
+      color:var(--muted);
+      opacity:0.6;
+    }
+    .calCell.selected{
+      background:rgba(37,99,235,0.15);
+      border-color:rgba(37,99,235,0.35);
+      color:var(--text);
+      font-weight:600;
+    }
+    .calCell.today{
+      border-color:rgba(15,23,42,0.18);
     }
   `}</style>
 );
@@ -251,7 +317,6 @@ const parseTimeToMin = (hhmm) => {
   return (h || 0) * 60 + (m || 0);
 };
 
-// Format 24h -> "h:mm AM/PM" for display
 const formatTime12 = (hhmm) => {
   if (!hhmm) return "";
   const [hRaw, mRaw] = hhmm.split(":").map(Number);
@@ -259,11 +324,9 @@ const formatTime12 = (hhmm) => {
   const m = mRaw ?? 0;
   let ampm = "AM";
 
-  if (h === 0) {
-    h = 12;
-  } else if (h === 12) {
-    ampm = "PM";
-  } else if (h > 12) {
+  if (h === 0) h = 12;
+  else if (h === 12) ampm = "PM";
+  else if (h > 12) {
     h -= 12;
     ampm = "PM";
   }
@@ -271,7 +334,14 @@ const formatTime12 = (hhmm) => {
   return `${h}:${String(m).padStart(2, "0")} ${ampm}`;
 };
 
-// LIVE clock hook (for color updates)
+const formatTimeRange = (startTime, endTime) => {
+  if (!startTime && !endTime) return "—";
+  if (startTime && endTime)
+    return `${formatTime12(startTime)} – ${formatTime12(endTime)}`;
+  if (startTime) return `${formatTime12(startTime)}`;
+  return `${formatTime12(endTime)}`;
+};
+
 function useNow(intervalMs = 60000) {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -281,59 +351,100 @@ function useNow(intervalMs = 60000) {
   return now;
 }
 
-// Compute status color for a task
+function getDueTime(task) {
+  return task.endTime || task.startTime || "";
+}
+
 function getTaskColor(task, now) {
-  // No time => always gray
-  if (!task.time) return "#9ca3af"; // gray
+  // 1. Completed = always green
+  if (task.completedAt) return "#22c55e"; // green
+
+  const hasStart = !!task.startTime;
+  const hasEnd = !!task.endTime;
+
+  // 2. No time at all = gray
+  if (!hasStart && !hasEnd) return "#9ca3af"; // gray
 
   try {
     const [year, month, day] = task.date.split("-").map(Number);
-    const [h, m] = task.time.split(":").map(Number);
-    const due = new Date(year, month - 1, day, h || 0, m || 0, 0, 0);
-    const diffMinutes = (due.getTime() - now.getTime()) / 60000;
 
-    if (diffMinutes <= 0) {
-      // Past due
-      return "#ef4444"; // red
+    const makeDate = (hhmm) => {
+      const [h, m] = hhmm.split(":").map(Number);
+      return new Date(year, month - 1, day, h || 0, m || 0, 0, 0);
+    };
+
+    const nowMs = now.getTime();
+
+    // CASE A: start + end time exist
+    if (hasStart && hasEnd) {
+      const start = makeDate(task.startTime).getTime();
+      const end = makeDate(task.endTime).getTime();
+
+      if (nowMs >= start && nowMs <= end) return "#facc15"; // yellow
+      if (nowMs > end) return "#ef4444"; // red
+      return "#9ca3af"; // gray
     }
-    if (diffMinutes <= 60) {
-      // Within 1 hour
-      return "#facc15"; // yellow
+
+    // CASE B: only start time exists
+    if (hasStart && !hasEnd) {
+      const start = makeDate(task.startTime).getTime();
+      const oneHourBefore = start - 60 * 60 * 1000;
+
+      if (nowMs >= oneHourBefore && nowMs < start) return "#facc15"; // yellow
+      if (nowMs >= start) return "#ef4444"; // red
+      return "#9ca3af"; // gray
     }
-    return "#9ca3af"; // more than an hour away
+
+    return "#9ca3af";
   } catch {
     return "#9ca3af";
   }
 }
 
-// Convert 24h "HH:MM" string -> { hour: "1-12", minute: "00-59", ampm }
+
 function split24To12(hhmm) {
   if (!hhmm) return { hour: "", minute: "", ampm: "AM" };
   const [hRaw, mRaw] = hhmm.split(":").map(Number);
   let h = hRaw ?? 0;
   const m = mRaw ?? 0;
   let ampm = "AM";
-  if (h === 0) {
-    h = 12;
-  } else if (h === 12) {
-    ampm = "PM";
-  } else if (h > 12) {
+  if (h === 0) h = 12;
+  else if (h === 12) ampm = "PM";
+  else if (h > 12) {
     h -= 12;
     ampm = "PM";
   }
-  return {
-    hour: String(h),
-    minute: String(m).padStart(2, "0"),
-    ampm,
-  };
+  return { hour: String(h), minute: String(m).padStart(2, "0"), ampm };
 }
 
-// Types
-/** @typedef {{ id: string; title: string; date: string; time: string; createdAt: string; completedAt?: string|null; }} Task */
+const to24Hour = (hStr, mStr, ampmVal) => {
+  const h = parseInt(hStr || "", 10);
+  const m = parseInt(mStr || "0", 10);
+  if (!h) return "";
+  let hours = h % 12;
+  if (ampmVal === "PM") hours += 12;
+  return `${String(hours).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+};
+
+const monthLabel = (year, monthIndex) => {
+  const d = new Date(year, monthIndex, 1);
+  return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+};
+
+const parseISOToDate = (iso) => {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+};
+
+const isSameDay = (a, b) =>
+  a.getFullYear() === b.getFullYear() &&
+  a.getMonth() === b.getMonth() &&
+  a.getDate() === b.getDate();
+
 const uid = () =>
   Math.random().toString(36).slice(2) + Date.now().toString(36);
 
-// ===== Auth (localStorage) =====
+// ===== Auth =====
 const USERS_KEY = "mini_tasks_users_v1";
 const SESSION_KEY = "mini_tasks_session_v1";
 function useAuth() {
@@ -380,10 +491,10 @@ function useAuth() {
   return { user, login, signup, logout };
 }
 
-// ===== Tasks (localStorage per user) =====
+// ===== Tasks =====
 const tasksKeyFor = (username) => `mini_tasks_items_${username || "_anon"}`;
 function useTasks(username) {
-  const [tasks, setTasks] = useState(/** @type {Task[]} */ ([]));
+  const [tasks, setTasks] = useState([]);
   useEffect(() => {
     if (!username) {
       setTasks([]);
@@ -391,11 +502,23 @@ function useTasks(username) {
     }
     try {
       const raw = localStorage.getItem(tasksKeyFor(username));
-      setTasks(raw ? JSON.parse(raw) : []);
+      const parsed = raw ? JSON.parse(raw) : [];
+
+      const migrated = (parsed || []).map((t) => {
+        const hasNew =
+          typeof t.startTime !== "undefined" || typeof t.endTime !== "undefined";
+        if (hasNew) {
+          return { ...t, startTime: t.startTime || "", endTime: t.endTime || "" };
+        }
+        return { ...t, startTime: t.time || "", endTime: "" };
+      });
+
+      setTasks(migrated);
     } catch {
       setTasks([]);
     }
   }, [username]);
+
   useEffect(() => {
     if (!username) return;
     try {
@@ -403,20 +526,22 @@ function useTasks(username) {
     } catch {}
   }, [tasks, username]);
 
-  const addTask = (title, dateISO, timeHHMM) => {
+  const addTask = (title, dateISO, startTimeHHMM, endTimeHHMM) => {
     if (!title.trim()) return;
     setTasks((prev) => [
       {
         id: uid(),
         title: title.trim(),
         date: dateISO,
-        time: timeHHMM || "",
+        startTime: startTimeHHMM || "",
+        endTime: endTimeHHMM || "",
         createdAt: new Date().toISOString(),
         completedAt: null,
       },
       ...prev,
     ]);
   };
+
   const toggleTask = (id) =>
     setTasks((prev) =>
       prev.map((t) =>
@@ -425,6 +550,7 @@ function useTasks(username) {
           : t
       )
     );
+
   const removeTask = (id) =>
     setTasks((prev) => prev.filter((t) => t.id !== id));
 
@@ -436,140 +562,187 @@ function useTasks(username) {
   return { tasks, addTask, toggleTask, removeTask, updateTask };
 }
 
-// ===== Edit Task Modal =====
-function EditTaskModal({ task, weekDays, onSave, onClose }) {
-  const [title, setTitle] = useState(task.title);
-  const [dateKeyValue, setDateKeyValue] = useState(task.date);
+/* ===== Calendar Picker Component =====
+   - Shows full month grid
+   - Prev/Next month arrows
+   - Click a day to select
+   - Includes trailing days from prev/next month (muted)
+*/
+function CalendarPicker({ valueISO, onChangeISO }) {
+  const selectedDate = useMemo(() => parseISOToDate(valueISO), [valueISO]);
+  const [viewYear, setViewYear] = useState(selectedDate.getFullYear());
+  const [viewMonth, setViewMonth] = useState(selectedDate.getMonth()); // 0-11
 
-  const { hour: initialHour, minute: initialMinute, ampm: initialAmpm } =
-    split24To12(task.time);
-  const [hour, setHour] = useState(initialHour);
-  const [minute, setMinute] = useState(initialMinute);
-  const [ampm, setAmpm] = useState(initialAmpm);
+  // Keep view synced when selecting a date from a different month
+  useEffect(() => {
+    setViewYear(selectedDate.getFullYear());
+    setViewMonth(selectedDate.getMonth());
+  }, [selectedDate]);
 
-  const to24Hour = (hStr, mStr, ampmVal) => {
-    const h = parseInt(hStr || "", 10);
-    const m = parseInt(mStr || "0", 10);
-    if (!h) return ""; // allow blank time
-    let hours = h % 12;
-    if (ampmVal === "PM") hours += 12;
-    return `${String(hours).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  const today = useMemo(() => toMidnight(new Date()), []);
+
+  const goPrev = () => {
+    const d = new Date(viewYear, viewMonth - 1, 1);
+    setViewYear(d.getFullYear());
+    setViewMonth(d.getMonth());
   };
+  const goNext = () => {
+    const d = new Date(viewYear, viewMonth + 1, 1);
+    setViewYear(d.getFullYear());
+    setViewMonth(d.getMonth());
+  };
+
+  const gridDates = useMemo(() => {
+    const firstOfMonth = new Date(viewYear, viewMonth, 1);
+    const startDay = firstOfMonth.getDay(); // 0 Sun
+    const gridStart = new Date(viewYear, viewMonth, 1 - startDay);
+
+    return Array.from({ length: 42 }, (_, i) => {
+      const d = new Date(gridStart);
+      d.setDate(gridStart.getDate() + i);
+      d.setHours(0, 0, 0, 0);
+      return d;
+    });
+  }, [viewYear, viewMonth]);
+
+  const dow = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+  return (
+    <div className="calWrap">
+      <div className="calHeader">
+        <button type="button" className="btn sm ghost" onClick={goPrev} aria-label="Previous month">
+          ←
+        </button>
+        <div className="calMonth">{monthLabel(viewYear, viewMonth)}</div>
+        <button type="button" className="btn sm ghost" onClick={goNext} aria-label="Next month">
+          →
+        </button>
+      </div>
+
+      <div className="calGrid" style={{ marginBottom: 6 }}>
+        {dow.map((d) => (
+          <div key={d} className="calDow">{d}</div>
+        ))}
+      </div>
+
+      <div className="calGrid">
+        {gridDates.map((d) => {
+          const muted = d.getMonth() !== viewMonth;
+          const selected = isSameDay(d, selectedDate);
+          const isToday = isSameDay(d, today);
+          const cls = [
+            "calCell",
+            muted ? "muted" : "",
+            selected ? "selected" : "",
+            isToday ? "today" : "",
+          ].filter(Boolean).join(" ");
+
+          return (
+            <button
+              key={d.toISOString()}
+              type="button"
+              className={cls}
+              onClick={() => onChangeISO(dateKey(d))}
+              title={d.toLocaleDateString()}
+            >
+              {d.getDate()}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ===== Edit Task Modal =====
+function EditTaskModal({ task, onSave, onClose }) {
+  const [title, setTitle] = useState(task.title);
+  const [dateISO, setDateISO] = useState(task.date);
+
+  const startSplit = split24To12(task.startTime || "");
+  const endSplit = split24To12(task.endTime || "");
+
+  const [sHour, setSHour] = useState(startSplit.hour);
+  const [sMinute, setSMinute] = useState(startSplit.minute);
+  const [sAmpm, setSAmpm] = useState(startSplit.ampm);
+
+  const [eHour, setEHour] = useState(endSplit.hour);
+  const [eMinute, setEMinute] = useState(endSplit.minute);
+  const [eAmpm, setEAmpm] = useState(endSplit.ampm);
 
   const handleSubmit = (e) => {
     e.preventDefault();
     const trimmed = title.trim();
     if (!trimmed) return;
 
-    const timeValue = hour ? to24Hour(hour, minute, ampm) : "";
+    const startTime = sHour ? to24Hour(sHour, sMinute, sAmpm) : "";
+    const endTime = eHour ? to24Hour(eHour, eMinute, eAmpm) : "";
 
     onSave({
       title: trimmed,
-      date: dateKeyValue,
-      time: timeValue,
+      date: dateISO,
+      startTime,
+      endTime,
     });
     onClose();
   };
 
   const handleBackdropClick = (e) => {
-    if (e.target.classList.contains("modalOverlay")) {
-      onClose();
-    }
+    if (e.target.classList.contains("modalOverlay")) onClose();
   };
-
-  const opts = weekDays.map((d) => ({
-    key: dateKey(d),
-    label: `${fmtWkday(d)} ${fmtMD(d)}`,
-  }));
 
   return (
     <div className="modalOverlay" onMouseDown={handleBackdropClick}>
       <form className="modal" onSubmit={handleSubmit}>
         <div className="modalHeader">
           <div className="modalTitle">Edit task</div>
-          <button
-            type="button"
-            className="x"
-            onClick={onClose}
-            aria-label="Close"
-          >
+          <button type="button" className="x" onClick={onClose} aria-label="Close">
             ✕
           </button>
         </div>
 
         <div className="modalRow">
           <span className="modalLabel">Title</span>
-          <input
-            className="input"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            autoFocus
-          />
+          <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
         </div>
 
         <div className="modalRow">
-          <span className="modalLabel">Day (this week)</span>
-          <select
-            className="input"
-            value={dateKeyValue}
-            onChange={(e) => setDateKeyValue(e.target.value)}
-          >
-            {opts.map((o) => (
-              <option key={o.key} value={o.key}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+          <span className="modalLabel">Date</span>
+          <CalendarPicker valueISO={dateISO} onChangeISO={setDateISO} />
         </div>
 
         <div className="modalRow">
-          <span className="modalLabel">Time (optional)</span>
+          <span className="modalLabel">Start time (optional)</span>
           <div className="modalRowInline">
-            <input
-              className="input time"
-              type="number"
-              min="1"
-              max="12"
-              placeholder="HH"
-              value={hour}
-              onChange={(e) => setHour(e.target.value)}
-            />
-            <input
-              className="input time"
-              type="number"
-              min="0"
-              max="59"
-              placeholder="MM"
-              value={minute}
-              onChange={(e) => setMinute(e.target.value)}
-            />
-            <select
-              className="input time"
-              value={ampm}
-              onChange={(e) => setAmpm(e.target.value)}
-            >
+            <input className="input time" type="number" min="1" max="12" placeholder="HH" value={sHour} onChange={(e) => setSHour(e.target.value)} />
+            <input className="input time" type="number" min="0" max="59" placeholder="MM" value={sMinute} onChange={(e) => setSMinute(e.target.value)} />
+            <select className="input time" value={sAmpm} onChange={(e) => setSAmpm(e.target.value)}>
               <option value="AM">AM</option>
               <option value="PM">PM</option>
             </select>
-            <button
-              type="button"
-              className="btn sm ghost"
-              onClick={() => {
-                setHour("");
-                setMinute("");
-              }}
-            >
-              Clear time
+            <button type="button" className="btn sm ghost" onClick={() => { setSHour(""); setSMinute(""); setSAmpm("AM"); }}>
+              Clear
+            </button>
+          </div>
+        </div>
+
+        <div className="modalRow">
+          <span className="modalLabel">End time (optional)</span>
+          <div className="modalRowInline">
+            <input className="input time" type="number" min="1" max="12" placeholder="HH" value={eHour} onChange={(e) => setEHour(e.target.value)} />
+            <input className="input time" type="number" min="0" max="59" placeholder="MM" value={eMinute} onChange={(e) => setEMinute(e.target.value)} />
+            <select className="input time" value={eAmpm} onChange={(e) => setEAmpm(e.target.value)}>
+              <option value="AM">AM</option>
+              <option value="PM">PM</option>
+            </select>
+            <button type="button" className="btn sm ghost" onClick={() => { setEHour(""); setEMinute(""); setEAmpm("AM"); }}>
+              Clear
             </button>
           </div>
         </div>
 
         <div className="modalFooter">
-          <button
-            type="button"
-            className="btn ghost"
-            onClick={onClose}
-          >
+          <button type="button" className="btn ghost" onClick={onClose}>
             Cancel
           </button>
           <button className="btn primary" type="submit">
@@ -582,30 +755,29 @@ function EditTaskModal({ task, weekDays, onSave, onClose }) {
 }
 
 // ===== Day Column =====
-function DayColumn({
-  date,
-  items,
-  onAdd,
-  onToggle,
-  onRemove,
-  onEdit,
-  now,
-}) {
+function DayColumn({ date, items, onAdd, onToggle, onRemove, onEdit, now }) {
   const [isComposing, setIsComposing] = useState(false);
   const [title, setTitle] = useState("");
 
-  // 12-hour time inputs for new task
-  const [hour, setHour] = useState("");
-  const [minute, setMinute] = useState("");
-  const [ampm, setAmpm] = useState("AM");
+  const [sHour, setSHour] = useState("");
+  const [sMinute, setSMinute] = useState("");
+  const [sAmpm, setSAmpm] = useState("AM");
+
+  const [eHour, setEHour] = useState("");
+  const [eMinute, setEMinute] = useState("");
+  const [eAmpm, setEAmpm] = useState("AM");
 
   const sorted = useMemo(() => {
     return [...items].sort((a, b) => {
-      const aDone = a.completedAt ? 1 : 0,
-        bDone = b.completedAt ? 1 : 0;
+      const aDone = a.completedAt ? 1 : 0;
+      const bDone = b.completedAt ? 1 : 0;
       if (aDone !== bDone) return aDone - bDone;
-      const t = parseTimeToMin(a.time) - parseTimeToMin(b.time);
+
+      const aSortTime = a.startTime || getDueTime(a) || "";
+      const bSortTime = b.startTime || getDueTime(b) || "";
+      const t = parseTimeToMin(aSortTime) - parseTimeToMin(bSortTime);
       if (t !== 0) return t;
+
       return (a.createdAt || "").localeCompare(b.createdAt || "");
     });
   }, [items]);
@@ -613,26 +785,19 @@ function DayColumn({
   const cancel = () => {
     setIsComposing(false);
     setTitle("");
-    setHour("");
-    setMinute("");
-    setAmpm("AM");
-  };
-
-  // Convert 12h -> 24h "HH:MM"
-  const to24Hour = (hStr, mStr, ampmVal) => {
-    const h = parseInt(hStr || "", 10);
-    const m = parseInt(mStr || "0", 10);
-    if (!h) return ""; // allow blank time
-
-    let hours = h % 12;
-    if (ampmVal === "PM") hours += 12;
-    return `${String(hours).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    setSHour("");
+    setSMinute("");
+    setSAmpm("AM");
+    setEHour("");
+    setEMinute("");
+    setEAmpm("AM");
   };
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    const timeValue = hour ? to24Hour(hour, minute, ampm) : "";
-    onAdd(title, dateKey(date), timeValue);
+    const startTime = sHour ? to24Hour(sHour, sMinute, sAmpm) : "";
+    const endTime = eHour ? to24Hour(eHour, eMinute, eAmpm) : "";
+    onAdd(title, dateKey(date), startTime, endTime);
     cancel();
   };
 
@@ -651,20 +816,11 @@ function DayColumn({
       </div>
 
       {!isComposing ? (
-        <button
-          className="adder"
-          onClick={() => setIsComposing(true)}
-          title="Add a task to this day"
-        >
+        <button className="adder" onClick={() => setIsComposing(true)} title="Add a task to this day">
           + Click to add a task
         </button>
       ) : (
-        <form
-          className="composer"
-          onSubmit={handleSubmit}
-          onKeyDown={handleKeyDown}
-        >
-          {/* Row 1: Title (full width) */}
+        <form className="composer" onSubmit={handleSubmit} onKeyDown={handleKeyDown}>
           <input
             className="input titleInput"
             value={title}
@@ -673,40 +829,26 @@ function DayColumn({
             autoFocus
           />
 
-          {/* Row 2: Time (12h) + Buttons */}
-          <input
-            className="input time"
-            type="number"
-            min="1"
-            max="12"
-            placeholder="HH"
-            value={hour}
-            onChange={(e) => setHour(e.target.value)}
-          />
-          <input
-            className="input time"
-            type="number"
-            min="0"
-            max="59"
-            placeholder="MM"
-            value={minute}
-            onChange={(e) => setMinute(e.target.value)}
-          />
-          <select
-            className="input time"
-            value={ampm}
-            onChange={(e) => setAmpm(e.target.value)}
-          >
+          <span className="timeLabel">Start:</span>
+          <input className="input time" type="number" min="1" max="12" placeholder="HH" value={sHour} onChange={(e) => setSHour(e.target.value)} />
+          <input className="input time" type="number" min="0" max="59" placeholder="MM" value={sMinute} onChange={(e) => setSMinute(e.target.value)} />
+          <select className="input time" value={sAmpm} onChange={(e) => setSAmpm(e.target.value)}>
             <option value="AM">AM</option>
             <option value="PM">PM</option>
           </select>
 
-          <button className="btn primary" type="submit">
-            Add
-          </button>
-          <button className="btn" type="button" onClick={cancel}>
-            Cancel
-          </button>
+          <span className="miniSep">•</span>
+
+          <span className="timeLabel">End:</span>
+          <input className="input time" type="number" min="1" max="12" placeholder="HH" value={eHour} onChange={(e) => setEHour(e.target.value)} />
+          <input className="input time" type="number" min="0" max="59" placeholder="MM" value={eMinute} onChange={(e) => setEMinute(e.target.value)} />
+          <select className="input time" value={eAmpm} onChange={(e) => setEAmpm(e.target.value)}>
+            <option value="AM">AM</option>
+            <option value="PM">PM</option>
+          </select>
+
+          <button className="btn primary" type="submit">Add</button>
+          <button className="btn" type="button" onClick={cancel}>Cancel</button>
         </form>
       )}
 
@@ -721,70 +863,30 @@ function DayColumn({
               exit={{ opacity: 0, y: -8 }}
               className={`task ${t.completedAt ? "tDone" : ""}`}
             >
-              {/* Left: complete toggle */}
               <button
                 className={`circle ${t.completedAt ? "done" : ""}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggle(t.id);
-                }}
-                aria-label={
-                  t.completedAt ? "Mark as incomplete" : "Mark as complete"
-                }
+                onClick={(e) => { e.stopPropagation(); onToggle(t.id); }}
+                aria-label={t.completedAt ? "Mark as incomplete" : "Mark as complete"}
               >
                 {t.completedAt ? "✓" : ""}
               </button>
 
-              {/* Middle: title + time */}
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="tTitle" title={t.title}>
-                  {t.title}
-                </div>
-                <div className="tTime">
-                  {t.time ? formatTime12(t.time) : "—"}
-                </div>
+                <div className="tTitle" title={t.title}>{t.title}</div>
+                <div className="tTime">{formatTimeRange(t.startTime, t.endTime)}</div>
               </div>
 
-              {/* Right: status dot + buttons */}
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "flex-end",
-                  gap: 6,
-                }}
-              >
-                <div
-                  className="statusDot"
-                  title="Time status"
-                  style={{ backgroundColor: getTaskColor(t, now) }}
-                />
-                <button
-                  type="button"
-                  className="btn sm ghost"
-                  onClick={() => onEdit(t)}
-                >
-                  Edit
-                </button>
-                <button
-                  className="x"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemove(t.id);
-                  }}
-                  title="Delete"
-                >
-                  ✕
-                </button>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+                <div className="statusDot" title="Status" style={{ backgroundColor: getTaskColor(t, now) }} />
+                <button type="button" className="btn sm ghost" onClick={() => onEdit(t)}>Edit</button>
+                <button className="x" onClick={(e) => { e.stopPropagation(); onRemove(t.id); }} title="Delete">✕</button>
               </div>
             </motion.li>
           ))}
         </AnimatePresence>
+
         {sorted.length === 0 && (
-          <div
-            className="card pad"
-            style={{ textAlign: "center", color: "var(--muted)" }}
-          >
+          <div className="card pad" style={{ textAlign: "center", color: "var(--muted)" }}>
             No tasks yet
           </div>
         )}
@@ -812,62 +914,29 @@ function AuthView({ mode: initialMode = "login", onLogin, onSignup }) {
   return (
     <div className="authWrap">
       <div className="authBox">
-        <div className="authTitle">
-          Mini Tasks – Sign {mode === "login" ? "In" : "Up"}
-        </div>
-        <div className="center subtle">
-          Demo auth (local only). Do not use real credentials.
-        </div>
+        <div className="authTitle">Task Planner – Sign {mode === "login" ? "In" : "Up"}</div>
+        <div className="center subtle">Demo auth (local only). Do not use real credentials.</div>
         <div className="card pad">
           <form onSubmit={submit} style={{ display: "grid", gap: 8 }}>
             <label style={{ display: "grid", gap: 4 }}>
               <span className="subtle">Username</span>
-              <input
-                className="input"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="yourname"
-                required
-              />
+              <input className="input" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="yourname" required />
             </label>
             <label style={{ display: "grid", gap: 4 }}>
               <span className="subtle">Password</span>
-              <input
-                className="input"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                required
-              />
+              <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" required />
             </label>
-            {error && (
-              <div style={{ color: "#dc2626", fontSize: 14 }}>{error}</div>
-            )}
-            <button
-              className="btn primary"
-              type="submit"
-              style={{ width: "100%" }}
-            >
+            {error && <div style={{ color: "#dc2626", fontSize: 14 }}>{error}</div>}
+            <button className="btn primary" type="submit" style={{ width: "100%" }}>
               {mode === "login" ? "Sign In" : "Create Account"}
             </button>
           </form>
         </div>
         <div className="center subtle">
           {mode === "login" ? (
-            <span>
-              New here?{" "}
-              <button className="btn" onClick={() => setMode("signup")}>
-                Create an account
-              </button>
-            </span>
+            <span>New here? <button className="btn" onClick={() => setMode("signup")}>Create an account</button></span>
           ) : (
-            <span>
-              Have an account?{" "}
-              <button className="btn" onClick={() => setMode("login")}>
-                Sign in
-              </button>
-            </span>
+            <span>Have an account? <button className="btn" onClick={() => setMode("login")}>Sign in</button></span>
           )}
         </div>
       </div>
@@ -875,24 +944,18 @@ function AuthView({ mode: initialMode = "login", onLogin, onSignup }) {
   );
 }
 
-// ===== Planner (main signed-in UI) =====
+// ===== Planner =====
 function Planner({ username, onLogout }) {
   const { tasks, addTask, toggleTask, removeTask, updateTask } = useTasks(username);
   const [weekOffset, setWeekOffset] = useState(0);
   const [view, setView] = useState("chart");
-  const now = useNow(60000); // update every minute
+  const now = useNow(60000);
 
-  const [editingTask, setEditingTask] = useState(null); // Task or null
+  const [editingTask, setEditingTask] = useState(null);
 
   const base = useMemo(() => startOfWeek(new Date()), []);
-  const weekStart = useMemo(
-    () => addDays(base, weekOffset * 7),
-    [base, weekOffset]
-  );
-  const weekDays = useMemo(
-    () => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)),
-    [weekStart]
-  );
+  const weekStart = useMemo(() => addDays(base, weekOffset * 7), [base, weekOffset]);
+  const weekDays = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
 
   const grouped = useMemo(() => {
     const map = new Map();
@@ -910,13 +973,7 @@ function Planner({ username, onLogout }) {
         const dayTasks = grouped.get(key) || [];
         const completed = dayTasks.filter((t) => t.completedAt).length;
         const open = dayTasks.length - completed;
-        return {
-          label: fmtWkday(d),
-          date: fmtMD(d),
-          open,
-          completed,
-          total: dayTasks.length,
-        };
+        return { label: fmtWkday(d), date: fmtMD(d), open, completed, total: dayTasks.length };
       }),
     [grouped, weekDays]
   );
@@ -924,11 +981,7 @@ function Planner({ username, onLogout }) {
   const chartTotals = useMemo(
     () =>
       chartData.reduce(
-        (a, d) => ({
-          open: a.open + d.open,
-          completed: a.completed + d.completed,
-          total: a.total + d.total,
-        }),
+        (a, d) => ({ open: a.open + d.open, completed: a.completed + d.completed, total: a.total + d.total }),
         { open: 0, completed: 0, total: 0 }
       ),
     [chartData]
@@ -938,10 +991,7 @@ function Planner({ username, onLogout }) {
 
   const handleEditSave = (changes) => {
     if (!editingTask) return;
-    updateTask(editingTask.id, (prev) => ({
-      ...prev,
-      ...changes,
-    }));
+    updateTask(editingTask.id, (prev) => ({ ...prev, ...changes }));
   };
 
   return (
@@ -953,109 +1003,42 @@ function Planner({ username, onLogout }) {
               <div className="title">Planner</div>
               <div className="subtle">Week of {weekLabel}</div>
             </div>
+
             <div className="row">
-              <button
-                className="btn"
-                onClick={() => setWeekOffset(weekOffset - 1)}
-              >
-                ← Prev
-              </button>
-              <button className="btn" onClick={() => setWeekOffset(0)}>
-                This Week
-              </button>
-              <button
-                className="btn"
-                onClick={() => setWeekOffset(weekOffset + 1)}
-              >
-                Next →
-              </button>
+              <button className="btn" onClick={() => setWeekOffset(weekOffset - 1)}>← Prev</button>
+              <button className="btn" onClick={() => setWeekOffset(0)}>This Week</button>
+              <button className="btn" onClick={() => setWeekOffset(weekOffset + 1)}>Next →</button>
             </div>
+
             <div className="row">
-              <button
-                className={`btn ${view === "chart" ? "active" : ""}`}
-                onClick={() => setView("chart")}
-              >
-                Chart
-              </button>
-              <button
-                className={`btn ${view === "week" ? "active" : ""}`}
-                onClick={() => setView("week")}
-              >
-                Week
-              </button>
+              <button className={`btn ${view === "chart" ? "active" : ""}`} onClick={() => setView("chart")}>Chart</button>
+              <button className={`btn ${view === "week" ? "active" : ""}`} onClick={() => setView("week")}>Week</button>
             </div>
+
             <div className="row">
-              <div className="subtle">
-                Signed in as <b>{username}</b>
-              </div>
-              <button className="btn" onClick={onLogout}>
-                Log out
-              </button>
+              <div className="subtle">Signed in as <b>{username}</b></div>
+              <button className="btn" onClick={onLogout}>Log out</button>
             </div>
           </div>
 
           {view === "chart" ? (
             <div className="mainFill">
               <div className="stats">
-                <div className="card pad">
-                  <div className="subtle">Open</div>
-                  <div style={{ fontSize: 22, fontWeight: 700 }}>
-                    {chartTotals.open}
-                  </div>
-                </div>
-                <div className="card pad">
-                  <div className="subtle">Completed</div>
-                  <div style={{ fontSize: 22, fontWeight: 700 }}>
-                    {chartTotals.completed}
-                  </div>
-                </div>
-                <div className="card pad">
-                  <div className="subtle">Total</div>
-                  <div style={{ fontSize: 22, fontWeight: 700 }}>
-                    {chartTotals.total}
-                  </div>
-                </div>
+                <div className="card pad"><div className="subtle">Open</div><div style={{ fontSize: 22, fontWeight: 700 }}>{chartTotals.open}</div></div>
+                <div className="card pad"><div className="subtle">Completed</div><div style={{ fontSize: 22, fontWeight: 700 }}>{chartTotals.completed}</div></div>
+                <div className="card pad"><div className="subtle">Total</div><div style={{ fontSize: 22, fontWeight: 700 }}>{chartTotals.total}</div></div>
               </div>
+
               <div className="card chartWrap">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={chartData}
-                    margin={{ left: 16, right: 16, top: 40, bottom: 16 }}
-                  >
-                    <CartesianGrid
-                      strokeDasharray="3 3"
-                      stroke="var(--grid)"
-                    />
-                    <XAxis
-                      dataKey="label"
-                      tick={{ fill: "var(--text)" }}
-                      stroke="var(--border)"
-                    />
-                    <YAxis
-                      allowDecimals={false}
-                      tick={{ fill: "var(--text)" }}
-                      stroke="var(--border)"
-                    />
-                    <Tooltip
-                      formatter={(v, n, p) => [
-                        String(v),
-                        `${p.payload.date}`,
-                      ]}
-                    />
+                  <BarChart data={chartData} margin={{ left: 16, right: 16, top: 40, bottom: 16 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--grid)" />
+                    <XAxis dataKey="label" tick={{ fill: "var(--text)" }} stroke="var(--border)" />
+                    <YAxis allowDecimals={false} tick={{ fill: "var(--text)" }} stroke="var(--border)" />
+                    <Tooltip formatter={(v, n, p) => [String(v), `${p.payload.date}`]} />
                     <Legend wrapperStyle={{ color: "var(--text)" }} />
-                    <Bar
-                      dataKey="completed"
-                      stackId="a"
-                      name="Completed"
-                      radius={[8, 8, 0, 0]}
-                      fill="var(--barCompleted)"
-                    />
-                    <Bar
-                      dataKey="open"
-                      stackId="a"
-                      name="Open"
-                      fill="var(--barOpen)"
-                    />
+                    <Bar dataKey="completed" stackId="a" name="Completed" radius={[8, 8, 0, 0]} fill="var(--barCompleted)" />
+                    <Bar dataKey="open" stackId="a" name="Open" fill="var(--barOpen)" />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -1083,8 +1066,7 @@ function Planner({ username, onLogout }) {
           )}
 
           <div className="center subtle" style={{ padding: "12px 0" }}>
-            All data is stored locally in your browser. Do not use real
-            passwords.
+            All data is stored locally in your browser. Do not use real passwords.
           </div>
         </div>
       </div>
@@ -1092,7 +1074,6 @@ function Planner({ username, onLogout }) {
       {editingTask && (
         <EditTaskModal
           task={editingTask}
-          weekDays={weekDays}
           onSave={handleEditSave}
           onClose={() => setEditingTask(null)}
         />
@@ -1107,11 +1088,7 @@ export default function App() {
   return (
     <>
       <Styles />
-      {!user ? (
-        <AuthView onLogin={login} onSignup={signup} />
-      ) : (
-        <Planner username={user.username} onLogout={logout} />
-      )}
+      {!user ? <AuthView onLogin={login} onSignup={signup} /> : <Planner username={user.username} onLogout={logout} />}
     </>
   );
 }
